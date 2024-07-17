@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Interaction Helper</title>
+</head>
+
+<body>
+    <div id="map-container">
+        <div id="map">
+          <div id="toolbar">
+            <select id="select">
+              <option value='draw-polygon'>Draw Polygon</option>
+              <option value='draw-polyline'>Draw PolyLine</option>
+              <option value='draw-multipoint'>Draw MultiPoint</option>
+              <option value='draw-multilinestring'>Draw MultiLineString</option>
+              <option value='draw-multipolygon'>Draw MultiPolygon</option>
+              <option value='move'>Move</option>
+              <option value='modify-existing'>Modify Existing</option>
+              <option value='modify-new'>Modify w/ New</option>
+            </select> 
+            <div id="save">CTRL to save multi-geometries</div>
+          </div>
+        </div>
+      </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/openlayers/9.0.0/dist/ol.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/openlayers/9.0.0/ol.min.css"/>
+      
+
+    <script>
+        //NOTE: Javascript and HTML are weird about file importation so I had to copy and paste code directly from ol-hsb-lib.js.
+        //The use is the same except, like with the other things in the library, it must be prefixed
+        //with OL_HSB.mapInteractions(your_map_here) to create the mapInteractions object
+    
+        /**
+          * mapInteractions Allows for easy addition and deletion of map interactions using
+          * methods for the creation of translation, modification, and snap interactions.
+          * This class also supports the addition of other interactions besides the ones explicitly created in the class
+          * 
+          * NOTE: The options passed into the create functions are directly used to create the interactions, so any customization
+          * that can be done when creating your own interactions can be done here as well
+          * 
+          * @param {ol.Map} map - Map that mapInteractions will perform operations on
+        */
+        class mapInteractions {
+          constructor(map){
+            this.map = map;
+            // Dictionary to store created interactions
+            this.interactions = {};
+          }
+        
+          /** Adds any interaction to the internal dict and the map
+            * 
+            * @param id Required unique identifier
+            * @param {ol.interaction.*} interaction Interaction to be added
+            */
+          addInteraction(id, interaction){
+            if(this._unique(id)){
+              this.interactions[id] = interaction;
+              this.map.addInteraction(interaction);
+            } 
+          }
+        
+          /**
+            * Creates a list holding a select and translate interaction allowing a user to select and 
+            * move features on a map
+            * 
+            * @param id Required unique identifier
+            * Important options parameters:
+            * @param {object} options Object that holds options for the select interaction
+            * @param {ol.layer.*} options.layers Required. Individual or list of layers for the interaction to operate on
+            */
+          addDragInteraction(id, options){
+            if(!this._unique(id)){
+              return;
+            }
+            
+            if(!options.hasOwnProperty("layers")){
+              console.log("layers required for drag interaction");
+              return;
+            }
+
+            const select = new ol.interaction.Select(options);
+            const translate = new ol.interaction.Translate({
+              features: select.getFeatures()
+            });
+        
+            this.map.addInteraction(select);
+            this.map.addInteraction(translate);
+        
+            // Add the list of interactions to this.interactions
+            const drag = [];
+            drag.push(select);
+            drag.push(translate);
+            this.interactions[id] = drag;
+          }
+        
+          /**
+            * Creates a snap interaction and adds it to the map. 
+            * 
+            * @param id Required unique identifier
+            * Important options parameters:
+            * @param {object} options Required
+            * Source and features are mutually exclusive. Only pass one. These are what can be snapped to
+            * @param {*} options.source 
+            * @param {*} options.features 
+            */
+          addSnapInteraction(id, options){
+            if(!this._unique(id)){
+              return;
+            }
+        
+            // Verify that only source or only feature is present in options. Create a snap interaction based off of that
+            if(!options.hasOwnProperty("source") && !options.hasOwnProperty("features")){
+              console.log("addSnapInteraction failed. Needs source or features");
+            } else {
+              if(options.hasOwnProperty("source") && options.hasOwnProperty("features")){
+                console.log("addSnapInteraction failed. source and features cannot both be defined");
+              } else {
+                const snap = new ol.interaction.Snap(options);
+                this.interactions[id] = snap;
+                this.map.addInteraction(snap);
+              }
+            }
+          }
+        
+          /** Creates a modify interaction and adds it to the map
+            * 
+            * @param id Required unique identifier
+            * Important options parameters
+            * @param {object} selectOptions Required. Options for the select interaction
+            * @param {ol.layer.*} selectOptions.layer Required. Layer for the select interaction. Source is derived from this
+            * 
+            * Optional Object Parameters:
+            * @param {object} modifyOptions defaults to an empty object. Options passed to the modify interaction. Can be empty because features are derived from selectOptions.layer
+            * @param {boolean} newPoints Defaults to true. Determines whether the modify interaction will have the ability to create new points.
+            * If set to false, only vertices (points) of a geometry can be modified. 
+            * NOTE: modifies the insertVertexCondition attribute used in interaction creation when false
+            */
+          addModifyInteraction(id, selectOptions, {modifyOptions={}, newPoints=true}={}){
+            if(!this._unique(id)){
+              return;
+            }
+        
+            if(!selectOptions.hasOwnProperty("layers")){
+              console.log("layer required to create select interaction for modify interaction");
+              return;
+            }
+
+            const select = new ol.interaction.Select(selectOptions);
+            if(!modifyOptions.hasOwnProperty("features")){
+              modifyOptions["features"] = select.getFeatures();
+            }
+            if(!newPoints){
+              modifyOptions["insertVertexCondition"] = ol.events.condition.never;
+            } 
+
+            const modList = [];
+            const modify = new ol.interaction.Modify(modifyOptions);
+            this.map.addInteraction(select);
+            this.map.addInteraction(modify);
+            modList.push(select);
+            modList.push(modify);
+            this.interactions[id] = modList;
+          }
+
+          /** Uses a draw interaction of type polygon to create a series of polygons. When saved (ctrl) the polygons are aggregated into a multipolygon
+          * 
+          * @param id - Required unique identifier
+          * @param {string} type - type for draw interaction ("Point, LineString, Polygon")
+          * @param {object} options - object that holds options for the draw interaction. type property will be overidden
+          * @param {ol.source.*} options.source - required property to indicate source to be used
+          */
+          addMultiInteraction(id, type, options){
+            var multi = [];
+            if(type != "Point" && type != "LineString" && type != "Polygon"){
+              console.log("Invalid type. Valid types are point, linestring, or polygon");
+              return;
+            }
+
+            if(!this._unique(id)){
+              return;
+            }
+
+            if(!options.hasOwnProperty("source")){
+              console.log(id + " needs a source for the draw interaction");
+              return;
+            }
+
+            options["type"] = type;
+            const drawMulti = new ol.interaction.Draw(options);
+
+            this.interactions[id] = drawMulti;
+            this.map.addInteraction(drawMulti);
+
+            //On keypress (ctrl), aggregate the geometries into a multigeometry and remove the individual geometries from the source
+            document.addEventListener("keydown", (e) => {
+              if(e.ctrlKey && multi.length > 0){
+                switch (type){
+                  case "Point":
+                    var geom = new ol.geom.MultiPoint([]);
+                    for(var i = 0; i < multi.length; i++){
+                      geom.appendPoint(multi[i].getGeometry());
+                      options.source.removeFeature(multi[i]);
+                    }
+                    break;
+                  case "LineString": 
+                    var geom = new ol.geom.MultiLineString([]);
+                    for(var i = 0; i < multi.length; i++){
+                      geom.appendLineString(multi[i].getGeometry());
+                      options.source.removeFeature(multi[i]);
+                    }
+                    break;
+                  case "Polygon": 
+                    var geom = new ol.geom.MultiPolygon([]);
+                    for(var i = 0; i < multi.length; i++){
+                      geom.appendPolygon(multi[i].getGeometry());
+                      options.source.removeFeature(multi[i]);
+                    }
+                    break;
+                }
+                
+                const feature = new ol.Feature({
+                  geometry: geom
+                })
+                options.source.addFeature(feature);
+                multi = [];
+              }
+            });
+
+            drawMulti.on("drawend", (e) => {
+              multi.push(e.feature);
+            });
+
+            //If drawMulti is deactivated, clear the multi array
+            drawMulti.on("change:active", (e) => {
+              if(e.oldValue == true && drawMulti.getActive() == false){
+                multi = [];
+              }
+            });
+          }
+        
+          /** Removes the interaction from the map and internal object
+            * 
+            * @param id id of the interaction
+            */
+          removeInteraction(id){
+            //The drag interaction method creates an array, so that must be accounted for
+            if(this.interactions.hasOwnProperty(id)){
+              if(Array.isArray(this.interactions[id])){
+                for(var i = 0; i < this.interactions[id].length; i++){
+                  this.map.removeInteraction(this.interactions[id][i]);
+                }
+              } else {
+                this.map.removeInteraction(this.interactions[id])
+              }
+              delete this.interactions[id];
+            } else {
+              console.log("Cannot remove interaction. Invalid id: " + id);
+            }
+          }
+        
+          /**
+            * Remove all interactions stored in this.interactions from the map and from this.interactions
+            */
+          removeAllInteractions(){
+            for (const [key, value] of Object.entries(this.interactions)) {
+              this.removeInteraction(key);
+            }
+          }
+        
+          /** Get an interaction using an id
+            * NOTE: Could potentially return an array if retrieving drag interaction 
+            *
+            * @param id - Used to identify specific interaction
+          */
+          getInteraction(id){
+            if(this.interactions.hasOwnProperty(id)){
+              return this.interactions[id];
+            } else {
+              console.log(id + " does not exist");
+              return null;
+            }
+          }
+
+          /** Get the this.interactions object
+          */
+          getAllInteractions(){
+            return this.interactions;
+          }
+
+          /** Activate an interaction
+            *
+            * @param id - Used to identify specific interaction
+          */
+          activateInteraction(id){
+            if(this.interactions.hasOwnProperty(id)){
+              if(Array.isArray(this.interactions[id])){
+                for(var i = 0; i < this.interactions[id].length; i++){
+                  this.interactions[id][i].setActive(true);
+                }
+              } else {
+                this.interactions[id].setActive(true);
+              }
+            } else {
+              console.log(id + " cannot be activated because it does not exist");
+            }
+          }
+
+          /** Deactivate an interaction
+          *
+          * @param id - Used to identify specific interaction
+          */
+          deactivateInteraction(id){
+            if(this.interactions.hasOwnProperty(id)){
+              if(Array.isArray(this.interactions[id])){
+                for(var i = 0; i < this.interactions[id].length; i++){
+                  var interaction = this.interactions[id][i];
+                  if(interaction instanceof ol.interaction.Select){
+                    //Unselect all selected features
+                    interaction.getFeatures().clear();
+                  }
+                  interaction.setActive(false);
+                }
+              } else {
+                this.interactions[id].setActive(false);
+              }
+            } else {
+              console.log(id + " cannot be deactivated because it does not exist");
+            }
+          }
+
+          /** Deactivate all interactions
+          */
+          deactivateAllInteractions(){
+            const interactions = this.interactions;
+            for(const [key, value] of Object.entries(interactions)){
+              this.deactivateInteraction(key);
+            }
+          }
+
+          /** Verifies that an id exists and is unique
+            * 
+            * @param id Required. Uniqueness will be checked in this.interactions
+            */
+          _unique(id){
+            if(this.interactions.hasOwnProperty(id)){
+              console.log(id + " is not a unique interaction id");
+              return false;
+            }
+
+            return true;
+          }
+        }
+        </script>
+    
+      <script src="./InteractionHelper.js"></script>
+      <link rel="stylesheet" href="./InteractionHelper.css"/>
+    </body>
+</html>
